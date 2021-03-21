@@ -10,6 +10,7 @@ client = discord.Client()
 cluster = MongoClient(config('MONGO_CONNECTION_URL'))
 db = cluster[config('MONGO_DATABASE_NAME')]
 collection = db[config('MONGO_USERVOTES_COLLECTION')]
+voteChannelId = 822114786204188753
 
 
 @client.event
@@ -37,12 +38,14 @@ async def on_message(message):
                 'year': msgDatetime.year,
                 'month': msgDatetime.month,
                 'day': msgDatetime.day,
+                'hour': msgExperationDatetime.hour,
                 'minute': msgDatetime.minute,
             },
             "voteExpireAt": {
                 'year': msgExperationDatetime.year,
                 'month': msgExperationDatetime.month,
                 'day': msgExperationDatetime.day,
+                'hour': msgExperationDatetime.hour,
                 'minute': msgExperationDatetime.minute,
             },
             "rectionsCount": {
@@ -51,14 +54,14 @@ async def on_message(message):
                 'question': 0,
             }
         }
-        print(post)
-        # collection.insert_one(post)
-    elif message.content.startswith('$demprime'):
+        collection.insert_one(post)
+    
+    if message.content.startswith('$demprime'):
         if message.content == '$demprime':
             await message.channel.send('If you require assistance, type `$demprime help`.')
         elif message.content == '$demprime help':
             await message.channel.send(
-                'Democracy Prime is online.\n' +
+                'De822114786204188753mocracy Prime is online.\n' +
                 'All commands can be executed with `$demprime \{argument_here\}` ' +
                 'without the curly brackets.'
             )  # if more params are needed I will print out a list of themin this send block
@@ -67,5 +70,12 @@ async def on_message(message):
             if (len(msg) >= 3):
                 username = msg[2]
                 print(username)
+
+@client.event
+async def on_raw_reaction_add(payload):
+    if payload.channel_id != voteChannelId:
+        return
+    if (payload.emoji.name == '👍'):
+        print(str(payload))
 
 client.run(config('TOKEN'))
