@@ -104,6 +104,7 @@ async def on_raw_reaction_add(payload):
 
     # Check the pass or fail
     voteState = check_pass_or_fail(vote['reactionCount'], totalPopulation)
+    print('voteState: ' + voteState)
 
     # notify users if pass, fail, or if the vote shou
     if voteState != 'neither':
@@ -119,15 +120,15 @@ async def on_raw_reaction_add(payload):
         vote['isTerminated'] = True
         if voteState == 'pass':
             await channel.send(
-                'This vote has passed @admins'
+                'This vote has passed @Administration'
             )
         elif voteState == 'fail':
             await channel.send(
-                'This vote has failed @admins'
+                'This vote has failed @Administration'
             )
         elif voteState == 'admins':
             await channel.send(
-                'This vote has will now be elevated to @admins'
+                'This vote has will now be elevated to @Administration'
             )
 
     newValues = {"$set": {
@@ -164,15 +165,12 @@ async def on_raw_reaction_remove(payload):
 
 def update_count(emoji, reactionCount, addOrRemove):
     if emoji == '👍':
-        print('👍')
         reactionCount['thumbsup'] = (
             1 if addOrRemove == True else -1) + reactionCount['thumbsup']
     elif emoji == '👎':
-        print('👎')
         reactionCount['thumbsdown'] = (
             1 if addOrRemove == True else -1) + reactionCount['thumbsdown']
     elif emoji == '❓':
-        print('❓')
         reactionCount['question'] = (
             1 if addOrRemove == True else -1) + reactionCount['question']
     return reactionCount
@@ -181,16 +179,21 @@ def update_count(emoji, reactionCount, addOrRemove):
 def check_pass_or_fail(reactionCount, totalPopulation):
     totalVotes = reactionCount['thumbsup'] + \
         reactionCount['thumbsdown'] + reactionCount['question']
+    print('totalVotes: ' + str(totalVotes))
     percentageOfTotalVoters = (totalVotes * 100) / totalPopulation
+    print('percentageOfTotalVoters: ' + str(percentageOfTotalVoters))
 
     # Check if we should determine a pass or fail
     if percentageOfTotalVoters >= 60:
         percentageOfUpVotes = (
             reactionCount['thumbsup'] * 100) / totalPopulation
+        print('percentageOfUpVotes: ' + str(percentageOfUpVotes))
         percentageOfDownVotes = (
             reactionCount['thumbsdown'] * 100) / totalPopulation
+        print('percentageOfDownVotes: ' + str(percentageOfDownVotes))
         percentageOfAbstaining = (
             reactionCount['question'] * 100) / totalPopulation
+        print('percentageOfAbstaining: ' + str(percentageOfAbstaining))
         # Check for a possible win or loss
         if percentageOfAbstaining > 60:
             return 'fail'
