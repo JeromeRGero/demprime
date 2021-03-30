@@ -4,13 +4,16 @@ import os
 import pymongo
 from pymongo import MongoClient
 from decouple import config
+from user import User
 
 
 client = discord.Client()
 cluster = MongoClient(config('MONGO_CONNECTION_URL'))
 db = cluster[config('MONGO_DATABASE_NAME')]
-collection = db[config('MONGO_USERVOTES_COLLECTION')]
+userVotesCollection = db[config('MONGO_USERVOTES_COLLECTION')]
+userCollection = db[config('MONGO_USER_COLLECTION')]
 voteChannelId = 822114786204188753
+adminRole = '<@&822112365595983891>'
 
 
 @client.event
@@ -22,6 +25,10 @@ async def on_ready():
 async def on_message(message):
     if message.author.id == client.user.id:
         return
+
+    voter = User(message.author.name + "#" +
+                 message.author.discriminator, message.author.id)
+    should_add_or_update_voter(voter)
 
     if message.channel.name == 'votes':
         await message.add_reaction("\U0001F44D")
@@ -38,7 +45,7 @@ async def on_message(message):
                 'year': msgDatetime.year,
                 'month': msgDatetime.month,
                 'day': msgDatetime.day,
-                'hour': msgExperationDatetime.hour,
+                'hour': msgDatetime.hour,
                 'minute': msgDatetime.minute,
             },
             "voteExpireAt": {
@@ -55,7 +62,7 @@ async def on_message(message):
             },
             "isTerminated": False
         }
-        collection.insert_one(post)
+        userVotesCollection.insert_one(post)
 
     if message.content.startswith('$demprime'):
         if message.content == '$demprime':
@@ -75,13 +82,18 @@ async def on_message(message):
 
 @client.event
 async def on_raw_reaction_add(payload):
-    if payload.channel_id != voteChannelId or payload.user_id == client.user.id:
+    if payload.channel_id != voteChannelId or \
+            payload.user_id == client.user.id or \
+            payload.emoji.name not in ['👍', '👎', '❓']:
         return
+
+    print("User with ID {0}'s add reaction has passed the initial check.".format(
+        payload.message_id))
 
     # Grab vote.
     filterVote = {'messageId': payload.message_id}
-    vote = collection.find_one(filterVote)
-    if vote['isTerminated'] == True:
+    vote = userVotesCollection.find_one(filterVote)
+    if vote == None or vote['isTerminated'] == True:
         return
 
     # Update the user vote counts.
@@ -109,27 +121,39 @@ async def on_raw_reaction_add(payload):
     # notify users if pass, fail, or if the vote shou
     if voteState != 'neither':
         channel = None
+        resolutions = None
         for curChannel in server.channels:
             if curChannel.name == 'votes':
                 channel = curChannel
-                break
+            if curChannel.name == 'resolutions':
+                resolutions = curChannel
         if channel == None:
             print('ERROR: Unable to find channel')
             return
-
+        message = await channel.fetch_message(payload.message_id)
+        print('Found poll: ' + message.content)
         vote['isTerminated'] = True
         if voteState == 'pass':
-            await channel.send(
-                'This vote has passed @Administration'
+            await resolutions.send(
+                'poll: [{0}] by: [{1}] has passed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
+                    vote['messageContent'], message.author.mention, vote['reactionCount']['thumbsup'],
+                    vote['reactionCount']['thumbsdown'], vote['reactionCount']['question'], adminRole, str(totalPopulation))
             )
+            await message.delete()
         elif voteState == 'fail':
-            await channel.send(
-                'This vote has failed @Administration'
+            await resolutions.send(
+                'poll: [{0}] by: [{1}] has failed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
+                    vote['messageContent'], message.author.mention, vote['reactionCount']['thumbsup'],
+                    vote['reactionCount']['thumbsdown'], vote['reactionCount']['question'], adminRole, str(totalPopulation))
             )
+            await message.delete()
         elif voteState == 'admins':
-            await channel.send(
-                'This vote has will now be elevated to @Administration'
+            await resolutions.send(
+                'poll: [{0}] by: [{1}] will now be elevated to {5} \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}]\nTotal Population: {6}'.format(
+                    vote['messageContent'], message.author.mention, vote['reactionCount']['thumbsup'],
+                    vote['reactionCount']['thumbsdown'], vote['reactionCount']['question'], adminRole, str(totalPopulation))
             )
+            await message.delete()
 
     newValues = {"$set": {
         "reactionCount.thumbsup": vote['reactionCount']['thumbsup'],
@@ -137,18 +161,23 @@ async def on_raw_reaction_add(payload):
         "reactionCount.question": vote['reactionCount']['question'],
         "isTerminated": vote['isTerminated']
     }}
-    collection.update_one(filterVote, newValues)
+    userVotesCollection.update_one(filterVote, newValues)
 
 
 @client.event
 async def on_raw_reaction_remove(payload):
-    if payload.channel_id != voteChannelId or payload.user_id == client.user.id:
+    if payload.channel_id != voteChannelId or \
+            payload.user_id == client.user.id or \
+            payload.emoji.name not in ['👍', '👎', '❓']:
         return
+
+    print("User with ID {0}'s add reaction has passed the initial check.".format(
+        payload.message_id))
 
     # Grab vote.
     filterVote = {'messageId': payload.message_id}
-    vote = collection.find_one(filterVote)
-    if vote['isTerminated'] == True:
+    vote = userVotesCollection.find_one(filterVote)
+    if vote == None or vote['isTerminated'] == True:
         return
 
     # Update the user vote counts.
@@ -160,7 +189,7 @@ async def on_raw_reaction_remove(payload):
         "reactionCount.thumbsdown": vote['reactionCount']['thumbsdown'],
         "reactionCount.question": vote['reactionCount']['question']
     }}
-    collection.update_one(filterVote, newValues)
+    userVotesCollection.update_one(filterVote, newValues)
 
 
 def update_count(emoji, reactionCount, addOrRemove):
@@ -197,7 +226,7 @@ def check_pass_or_fail(reactionCount, totalPopulation):
         # Check for a possible win or loss
         if percentageOfAbstaining > 60:
             return 'fail'
-        if percentageOfUpVotes >= 50:
+        elif percentageOfUpVotes >= 50:
             return 'pass'
         elif percentageOfDownVotes >= 50:
             return 'fail'
@@ -209,6 +238,23 @@ def check_pass_or_fail(reactionCount, totalPopulation):
             return 'admins'
 
     return 'neither'
-    
+
+
+def should_add_or_update_voter(voter):
+    filterUser = {"id": voter.id}
+    user = userCollection.find_one(filterUser)
+    if user == None:
+        userCollection.insert_one(voter.get_user())
+        return
+    foundVoter = User(user['name'], user['id'])
+    if voter.name != foundVoter.name:
+        userCollection.update_one(filterUser, foundVoter.set_name_in_mongo)
+
+
+def get_voter(userId):
+    filterUser = {"id": userId}
+    user = userCollection.find_one(filterUser)
+    return User(user['name'], user['id'])
+
 
 client.run(config('TOKEN'))
