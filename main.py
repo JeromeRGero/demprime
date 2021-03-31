@@ -7,7 +7,10 @@ from decouple import config
 from user import User
 
 
-client = discord.Client()
+intents = discord.Intents.default()
+intents.members = True
+intents.presences = True
+client = discord.Client(intents=intents)
 cluster = MongoClient(config('MONGO_CONNECTION_URL'))
 db = cluster[config('MONGO_DATABASE_NAME')]
 userVotesCollection = db[config('MONGO_USERVOTES_COLLECTION')]
@@ -87,19 +90,6 @@ async def on_raw_reaction_add(payload):
             payload.emoji.name not in ['👍', '👎', '❓']:
         return
 
-    print("User with ID {0}'s add reaction has passed the initial check.".format(
-        payload.message_id))
-
-    # Grab vote.
-    filterVote = {'messageId': payload.message_id}
-    vote = userVotesCollection.find_one(filterVote)
-    if vote == None or vote['isTerminated'] == True:
-        return
-
-    # Update the user vote counts.
-    vote["reactionCount"] = update_count(
-        payload.emoji.name, vote['reactionCount'], True)
-
     server = None
     # Grab "Guild" TODO: MAKE THIS MORE DYNAMIC
     for guild in client.guilds:
@@ -111,57 +101,90 @@ async def on_raw_reaction_add(payload):
         print('ERROR: Unable to find server')
         return
 
+    currentVoter = await server.fetch_member(payload.user_id)
+    voteChannel = server.get_channel(payload.channel_id)
+    message = await voteChannel.fetch_message(payload.message_id)
+
+    # TODO: Add a return statment if the message.content does not
+    # startswith('Poll:')
+
+    print("#####\nUser: [{}] has added a [{}] \nTo poll [{}].\n#####".format(
+        currentVoter.name, payload.emoji.name, message.content))
+
+    # Grab vote from mongo.
+    filterPoll = {'messageId': payload.message_id}
+    poll = userVotesCollection.find_one(filterPoll)
+    if poll == None or poll['isTerminated'] == True:
+        return
+
+    # TODO make sure user has not reacted to the the poll yet
+    # if they have, remove there vote on poll both from
+    # the discord message and on mongo.
+
+    # Update the user vote counts.
+    poll["reactionCount"] = update_count(
+        payload.emoji.name, poll['reactionCount'], True)
+
+    # For the bot
+    exclude = 1
+    # excluding all 'illegal' members who wish to not vote on polls
+    members = server.members
+    for member in members:
+        for role in member.roles:
+            if role.name == 'illegal':
+                exclude += 1
+
     # Grab the overall population of the server.
-    totalPopulation = server.member_count - 1
+    totalPopulation = server.member_count - exclude
 
     # Check the pass or fail
-    voteState = check_pass_or_fail(vote['reactionCount'], totalPopulation)
-    print('voteState: ' + voteState)
+    stateOfPoll = check_pass_or_fail(poll['reactionCount'], totalPopulation)
+    print('voteState: ' + stateOfPoll)
 
     # notify users if pass, fail, or if the vote shou
-    if voteState != 'neither':
-        channel = None
-        resolutions = None
+    if stateOfPoll != 'neither':
+        pollingChannel = None
+        resolutionsChannel = None
         for curChannel in server.channels:
             if curChannel.name == 'votes':
-                channel = curChannel
+                pollingChannel = curChannel
             if curChannel.name == 'resolutions':
-                resolutions = curChannel
-        if channel == None:
+                resolutionsChannel = curChannel
+        if pollingChannel == None:
             print('ERROR: Unable to find channel')
             return
-        message = await channel.fetch_message(payload.message_id)
+        message = await pollingChannel.fetch_message(payload.message_id)
         print('Found poll: ' + message.content)
-        vote['isTerminated'] = True
-        if voteState == 'pass':
-            await resolutions.send(
+        poll['isTerminated'] = True
+        if stateOfPoll == 'pass':
+            await resolutionsChannel.send(
                 'poll: [{0}] by: [{1}] has passed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
-                    vote['messageContent'], message.author.mention, vote['reactionCount']['thumbsup'],
-                    vote['reactionCount']['thumbsdown'], vote['reactionCount']['question'], adminRole, str(totalPopulation))
+                    poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                    poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
             )
             await message.delete()
-        elif voteState == 'fail':
-            await resolutions.send(
+        elif stateOfPoll == 'fail':
+            await resolutionsChannel.send(
                 'poll: [{0}] by: [{1}] has failed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
-                    vote['messageContent'], message.author.mention, vote['reactionCount']['thumbsup'],
-                    vote['reactionCount']['thumbsdown'], vote['reactionCount']['question'], adminRole, str(totalPopulation))
+                    poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                    poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
             )
             await message.delete()
-        elif voteState == 'admins':
-            await resolutions.send(
+        elif stateOfPoll == 'admins':
+            await resolutionsChannel.send(
                 'poll: [{0}] by: [{1}] will now be elevated to {5} \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}]\nTotal Population: {6}'.format(
-                    vote['messageContent'], message.author.mention, vote['reactionCount']['thumbsup'],
-                    vote['reactionCount']['thumbsdown'], vote['reactionCount']['question'], adminRole, str(totalPopulation))
+                    poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                    poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
             )
             await message.delete()
 
     newValues = {"$set": {
-        "reactionCount.thumbsup": vote['reactionCount']['thumbsup'],
-        "reactionCount.thumbsdown": vote['reactionCount']['thumbsdown'],
-        "reactionCount.question": vote['reactionCount']['question'],
-        "isTerminated": vote['isTerminated']
+        "reactionCount.thumbsup": poll['reactionCount']['thumbsup'],
+        "reactionCount.thumbsdown": poll['reactionCount']['thumbsdown'],
+        "reactionCount.question": poll['reactionCount']['question'],
+        "isTerminated": poll['isTerminated']
     }}
-    userVotesCollection.update_one(filterVote, newValues)
+    userVotesCollection.update_one(filterPoll, newValues)
 
 
 @client.event
@@ -193,6 +216,8 @@ async def on_raw_reaction_remove(payload):
 
 
 def update_count(emoji, reactionCount, addOrRemove):
+    print('before: [👍{} 👎{} ❓{}]'.format(reactionCount['thumbsup'],
+          reactionCount['thumbsdown'], reactionCount['question']))
     if emoji == '👍':
         reactionCount['thumbsup'] = (
             1 if addOrRemove == True else -1) + reactionCount['thumbsup']
@@ -202,6 +227,8 @@ def update_count(emoji, reactionCount, addOrRemove):
     elif emoji == '❓':
         reactionCount['question'] = (
             1 if addOrRemove == True else -1) + reactionCount['question']
+    print('after: [👍{} 👎{} ❓{}]'.format(reactionCount['thumbsup'],
+          reactionCount['thumbsdown'], reactionCount['question']))
     return reactionCount
 
 
@@ -256,5 +283,11 @@ def get_voter(userId):
     user = userCollection.find_one(filterUser)
     return User(user['name'], user['id'])
 
+
+async def check_for_multi_voting(message):
+    # add get voter in here or pass in name and discriminator of reacting voter
+    for reaction in message.reactions:
+        async for user in reaction.users():
+            print('{0} has reacted with {1.emoji}!'.format(user, reaction))
 
 client.run(config('TOKEN'))
