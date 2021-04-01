@@ -15,7 +15,8 @@ cluster = MongoClient(config('MONGO_CONNECTION_URL'))
 db = cluster[config('MONGO_DATABASE_NAME')]
 userVotesCollection = db[config('MONGO_USERVOTES_COLLECTION')]
 userCollection = db[config('MONGO_USER_COLLECTION')]
-voteChannelId = 822114786204188753
+pollingChannelId = 822114786204188753
+resolutionsChannelId = 826264784549969921
 adminRole = '<@&822112365595983891>'
 
 
@@ -33,7 +34,7 @@ async def on_message(message):
                  message.author.discriminator, message.author.id)
     should_add_or_update_voter(voter)
 
-    if message.channel.name == 'votes':
+    if message.channel.id == pollingChannelId:
         await message.add_reaction("\U0001F44D")
         await message.add_reaction("\U0001F44E")
         await message.add_reaction("\u2753")
@@ -85,25 +86,17 @@ async def on_message(message):
 
 @client.event
 async def on_raw_reaction_add(payload):
-    if payload.channel_id != voteChannelId or \
+    if payload.channel_id != pollingChannelId or \
             payload.user_id == client.user.id or \
             payload.emoji.name not in ['👍', '👎', '❓']:
         return
-
-    server = None
+    
     # Grab "Guild" TODO: MAKE THIS MORE DYNAMIC
-    for guild in client.guilds:
-        if guild.name == 'decentralizedfriends':
-            server = guild
-            break
-
-    if server == None:
-        print('ERROR: Unable to find server')
-        return
-
+    server = client.guilds[0]
     currentVoter = await server.fetch_member(payload.user_id)
-    voteChannel = server.get_channel(payload.channel_id)
-    message = await voteChannel.fetch_message(payload.message_id)
+    pollingChannel = server.get_channel(pollingChannelId)
+    resolutionsChannel = server.get_channel(resolutionsChannelId)
+    message = await pollingChannel.fetch_message(payload.message_id)
 
     # TODO: Add a return statment if the message.content does not
     # startswith('Poll:')
@@ -131,7 +124,7 @@ async def on_raw_reaction_add(payload):
     members = server.members
     for member in members:
         for role in member.roles:
-            if role.name == 'illegal':
+            if role.id == 826438835839172638:
                 exclude += 1
 
     # Grab the overall population of the server.
@@ -143,59 +136,50 @@ async def on_raw_reaction_add(payload):
 
     # notify users if pass, fail, or if the vote shou
     if stateOfPoll != 'neither':
-        pollingChannel = None
-        resolutionsChannel = None
-        for curChannel in server.channels:
-            if curChannel.name == 'votes':
-                pollingChannel = curChannel
-            if curChannel.name == 'resolutions':
-                resolutionsChannel = curChannel
-        if pollingChannel == None:
-            print('ERROR: Unable to find channel')
-            return
-        message = await pollingChannel.fetch_message(payload.message_id)
         print('Found poll: ' + message.content)
         poll['isTerminated'] = True
+        voterReactionList = await get_voter_reaction_list(message)
+        resolutionMessageString = ''
         if stateOfPoll == 'pass':
-            await resolutionsChannel.send(
-                'poll: [{0}] by: [{1}] has passed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
+            resolutionMessageString = 'poll: [{0}] by: [{1}] has passed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
                     poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
                     poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
-            )
-            await message.delete()
         elif stateOfPoll == 'fail':
-            await resolutionsChannel.send(
-                'poll: [{0}] by: [{1}] has failed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
+            resolutionMessageString = 'poll: [{0}] by: [{1}] has failed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
                     poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
                     poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
-            )
-            await message.delete()
         elif stateOfPoll == 'admins':
-            await resolutionsChannel.send(
-                'poll: [{0}] by: [{1}] will now be elevated to {5} \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}]\nTotal Population: {6}'.format(
+            resolutionMessageString = 'poll: [{0}] by: [{1}] will now be elevated to {5} \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}]\nTotal Population: {6}'.format(
                     poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
                     poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
-            )
-            await message.delete()
-
-    newValues = {"$set": {
+        for curString in voterReactionList: 
+            resolutionMessageString += curString
+        await resolutionsChannel.send(resolutionMessageString)
+        userVotesCollection.delete_one(filterPoll)
+        await message.delete()
+    else:
+        newValues = {"$set": {
         "reactionCount.thumbsup": poll['reactionCount']['thumbsup'],
-        "reactionCount.thumbsdown": poll['reactionCount']['thumbsdown'],
-        "reactionCount.question": poll['reactionCount']['question'],
-        "isTerminated": poll['isTerminated']
-    }}
-    userVotesCollection.update_one(filterPoll, newValues)
+            "reactionCount.thumbsdown": poll['reactionCount']['thumbsdown'],
+            "reactionCount.question": poll['reactionCount']['question'],
+            "isTerminated": poll['isTerminated']
+        }}
+        userVotesCollection.update_one(filterPoll, newValues)
 
 
 @client.event
 async def on_raw_reaction_remove(payload):
-    if payload.channel_id != voteChannelId or \
+    if payload.channel_id != pollingChannelId or \
             payload.user_id == client.user.id or \
             payload.emoji.name not in ['👍', '👎', '❓']:
         return
 
-    print("User with ID {0}'s add reaction has passed the initial check.".format(
-        payload.message_id))
+    # Grab "Guild" TODO: MAKE THIS MORE DYNAMIC
+    server = client.guilds[0]
+    currentVoter = await server.fetch_member(payload.user_id)
+
+    print("User {0}'s removal of a reaction has passed the initial check.".format(
+        currentVoter.name))
 
     # Grab vote.
     filterVote = {'messageId': payload.message_id}
@@ -284,10 +268,19 @@ def get_voter(userId):
     return User(user['name'], user['id'])
 
 
-async def check_for_multi_voting(message):
+async def get_voter_reaction_list(message):
     # add get voter in here or pass in name and discriminator of reacting voter
+    voterReactionList = []
+    idx = 0
+    emojiList = ['👍', '👎', '❓']
     for reaction in message.reactions:
         async for user in reaction.users():
-            print('{0} has reacted with {1.emoji}!'.format(user, reaction))
+            if user.name == 'Democracy Prime':
+                voterReactionList.append('\n--------------- User with {}'.format(reaction.emoji))
+                if idx < 3:
+                    idx += 1
+            else:
+                voterReactionList.append('\n{0.name}'.format(user))
+    return voterReactionList
 
 client.run(config('TOKEN'))
