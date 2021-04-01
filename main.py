@@ -271,14 +271,10 @@ def get_voter(userId):
 async def get_voter_reaction_list(message):
     # add get voter in here or pass in name and discriminator of reacting voter
     voterReactionList = []
-    idx = 0
-    emojiList = ['👍', '👎', '❓']
     for reaction in message.reactions:
         async for user in reaction.users():
             if user.name == 'Democracy Prime':
                 voterReactionList.append('\n--------------- User with {}'.format(reaction.emoji))
-                if idx < 3:
-                    idx += 1
             else:
                 voterReactionList.append('\n{0.name}'.format(user))
     return voterReactionList
