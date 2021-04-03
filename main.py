@@ -1,4 +1,5 @@
 import discord
+from discord.ext import tasks
 import datetime
 import os
 import pymongo
@@ -18,11 +19,53 @@ userCollection = db[config('MONGO_USER_COLLECTION')]
 pollingChannelId = 822114786204188753
 resolutionsChannelId = 826264784549969921
 adminRole = '<@&822112365595983891>'
+unregisterdVoterRoleId = 826438835839172638
 
 
 @client.event
 async def on_ready():
     print("I live... {0.user}".format(client))
+    check_all_polls_for_termination.start()
+
+
+@tasks.loop(minutes=15)
+async def check_all_polls_for_termination():
+    print("XXXXXXXXXX-15minLoopSTART-XXXXXXXXXX" + \
+        "\ncheck_all_polls_for_termination hit!")
+    currentDatetime = datetime.datetime.now()
+    print("currentDatetime: {}".format(currentDatetime))
+    query = {"voteExpireAt": {"$lt": currentDatetime}}
+    results = userVotesCollection.find(query)
+    print("Found and Terminating:")
+    server = client.guilds[0]
+    pollingChannel = server.get_channel(pollingChannelId)
+    resolutionsChannel = server.get_channel(resolutionsChannelId)
+    totalPopulation = get_total_population(server)
+    for poll in results:
+        stateOfPoll = check_pass_or_fail(poll["reactionCount"], totalPopulation)
+        message = await pollingChannel.fetch_message(poll['messageId'])
+        voterReactionList = await get_voter_reaction_list(message)
+        resolutionMessageString = ''
+        if stateOfPoll == 'pass':
+            resolutionMessageString = 'poll: [{0}] by: [{1}] has passed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
+                poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
+        elif stateOfPoll == 'admins':
+            resolutionMessageString = 'poll: [{0}] by: [{1}] will now be elevated to {5} \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}]\nTotal Population: {6}'.format(
+                poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
+        else:
+            resolutionMessageString = 'poll: [{0}] by: [{1}] has failed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
+                poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
+        for curString in voterReactionList:
+            resolutionMessageString += curString
+        await resolutionsChannel.send(resolutionMessageString)
+        filterPoll = {'messageId': poll["messageId"]}
+        userVotesCollection.delete_one(filterPoll)
+        await message.delete()
+        print(poll)
+    print("XXXXXXXXXX-15minLoopEND-XXXXXXXXXX")
 
 
 @client.event
@@ -45,20 +88,8 @@ async def on_message(message):
             "messageContent": message.content,
             "authorId": message.author.id,
             "authorName": message.author.name,
-            "voteCreatedAt": {
-                'year': msgDatetime.year,
-                'month': msgDatetime.month,
-                'day': msgDatetime.day,
-                'hour': msgDatetime.hour,
-                'minute': msgDatetime.minute,
-            },
-            "voteExpireAt": {
-                'year': msgExperationDatetime.year,
-                'month': msgExperationDatetime.month,
-                'day': msgExperationDatetime.day,
-                'hour': msgExperationDatetime.hour,
-                'minute': msgExperationDatetime.minute,
-            },
+            "voteCreatedAt": msgDatetime,
+            "voteExpireAt": msgExperationDatetime,
             "reactionCount": {
                 'thumbsup': 0,
                 'thumbsdown': 0,
@@ -90,7 +121,7 @@ async def on_raw_reaction_add(payload):
             payload.user_id == client.user.id or \
             payload.emoji.name not in ['👍', '👎', '❓']:
         return
-    
+
     # Grab "Guild" TODO: MAKE THIS MORE DYNAMIC
     server = client.guilds[0]
     currentVoter = await server.fetch_member(payload.user_id)
@@ -118,17 +149,8 @@ async def on_raw_reaction_add(payload):
     poll["reactionCount"] = update_count(
         payload.emoji.name, poll['reactionCount'], True)
 
-    # For the bot
-    exclude = 1
-    # excluding all 'illegal' members who wish to not vote on polls
-    members = server.members
-    for member in members:
-        for role in member.roles:
-            if role.id == 826438835839172638:
-                exclude += 1
-
     # Grab the overall population of the server.
-    totalPopulation = server.member_count - exclude
+    totalPopulation = get_total_population(server)
 
     # Check the pass or fail
     stateOfPoll = check_pass_or_fail(poll['reactionCount'], totalPopulation)
@@ -142,24 +164,24 @@ async def on_raw_reaction_add(payload):
         resolutionMessageString = ''
         if stateOfPoll == 'pass':
             resolutionMessageString = 'poll: [{0}] by: [{1}] has passed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
-                    poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
-                    poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
+                poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
         elif stateOfPoll == 'fail':
             resolutionMessageString = 'poll: [{0}] by: [{1}] has failed! \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}] \nTotal Population: {6}\n{5}'.format(
-                    poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
-                    poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
+                poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
         elif stateOfPoll == 'admins':
             resolutionMessageString = 'poll: [{0}] by: [{1}] will now be elevated to {5} \nFinal Count: [👍 {2}, 👎 {3}, ❓ {4}]\nTotal Population: {6}'.format(
-                    poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
-                    poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
-        for curString in voterReactionList: 
+                poll['messageContent'], message.author.mention, poll['reactionCount']['thumbsup'],
+                poll['reactionCount']['thumbsdown'], poll['reactionCount']['question'], adminRole, str(totalPopulation))
+        for curString in voterReactionList:
             resolutionMessageString += curString
         await resolutionsChannel.send(resolutionMessageString)
         userVotesCollection.delete_one(filterPoll)
         await message.delete()
     else:
         newValues = {"$set": {
-        "reactionCount.thumbsup": poll['reactionCount']['thumbsup'],
+            "reactionCount.thumbsup": poll['reactionCount']['thumbsup'],
             "reactionCount.thumbsdown": poll['reactionCount']['thumbsdown'],
             "reactionCount.question": poll['reactionCount']['question'],
             "isTerminated": poll['isTerminated']
@@ -251,18 +273,18 @@ def check_pass_or_fail(reactionCount, totalPopulation):
     return 'neither'
 
 
-def should_add_or_update_voter(voter):
-    filterUser = {"id": voter.id}
+def should_add_or_update_voter(frontEndVoter):
+    filterUser = {"id": frontEndVoter.id}
     user = userCollection.find_one(filterUser)
     if user == None:
-        userCollection.insert_one(voter.get_user())
+        userCollection.insert_one(frontEndVoter.get_user())
         return
-    foundVoter = User(user['name'], user['id'])
-    if voter.name != foundVoter.name:
-        userCollection.update_one(filterUser, foundVoter.set_name_in_mongo)
+    voterFromDB = User(user['name'], user['id'])
+    if frontEndVoter.name != voterFromDB.name:
+        userCollection.update_one(filterUser, voterFromDB.set_name_in_mongo)
 
 
-def get_voter(userId):
+def get_voter_from_db_by_id(userId):
     filterUser = {"id": userId}
     user = userCollection.find_one(filterUser)
     return User(user['name'], user['id'])
@@ -274,9 +296,24 @@ async def get_voter_reaction_list(message):
     for reaction in message.reactions:
         async for user in reaction.users():
             if user.name == 'Democracy Prime':
-                voterReactionList.append('\n--------------- User with {}'.format(reaction.emoji))
+                voterReactionList.append(
+                    '\n--------------- User with {}'.format(reaction.emoji))
             else:
                 voterReactionList.append('\n{0.name}'.format(user))
     return voterReactionList
+
+
+def get_total_population(server):
+    # For the bot
+    exclude = 1
+    # excluding all 'illegal' members who wish to not vote on polls
+    members = server.members
+    for member in members:
+        for role in member.roles:
+            if role.id == unregisterdVoterRoleId:
+                exclude += 1
+
+    # Grab the overall population of the server.
+    return server.member_count - exclude
 
 client.run(config('TOKEN'))
